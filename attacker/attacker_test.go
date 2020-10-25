@@ -2,12 +2,16 @@ package attacker
 
 import (
 	"context"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
+	vegeta "github.com/tsenart/vegeta/v12/lib"
+	"go.uber.org/goleak"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 
 func TestAttack(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -37,61 +41,41 @@ func TestAttack(t *testing.T) {
 			},
 			wantResCount: 0,
 		},
-		/*{
+		{
 			name:   "two result given back",
 			target: "http://host.xz",
 			opts: Options{
 				Attacker: &fakeAttacker{
 					results: []*vegeta.Result{
 						{
-							Attack: "1",
+							Code: 200,
 						},
 						{
-							Attack: "2",
+							Code: 200,
 						},
 					},
 				},
 			},
 			want: &Metrics{
-				StatusCodes: make(map[string]int),
-				Errors:      []string{},
+				Requests:   2,
+				Rate:       2,
+				Throughput: 2,
+				Success:    1,
+				StatusCodes: map[string]int{
+					"200": 2,
+				},
+				Errors: []string{},
 			},
 			wantResCount: 2,
-		},*/
+		},
 	}
 
 	for _, tt := range tests {
-		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		w := &watcher{
-			resCh: make(chan *Result),
-		}
-
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go w.countRes(ctx, &wg)
 		t.Run(tt.name, func(t *testing.T) {
-			got := Attack(ctx, tt.target, w.resCh, tt.opts)
-			cancel()
-			wg.Wait()
-			assert.Equal(t, tt.want, got)
-			assert.Equal(t, tt.wantResCount, w.count)
+			resCh := make(chan *Result, 100)
+			metricsCh := make(chan *Metrics, 100)
+			Attack(ctx, tt.target, resCh, metricsCh, tt.opts)
+			assert.Equal(t, tt.wantResCount, len(resCh))
 		})
-	}
-}
-
-type watcher struct {
-	resCh chan *Result
-	count int
-}
-
-func (w *watcher) countRes(ctx context.Context, wg *sync.WaitGroup) {
-	for {
-		select {
-		case <-ctx.Done():
-			wg.Done()
-			return
-		case <-w.resCh:
-			w.count++
-		}
 	}
 }

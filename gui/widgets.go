@@ -1,53 +1,64 @@
 package gui
 
 import (
-	"strconv"
-	"time"
+	"fmt"
 
 	"github.com/mum4k/termdash/cell"
 	"github.com/mum4k/termdash/linestyle"
+	"github.com/mum4k/termdash/widgetapi"
 	"github.com/mum4k/termdash/widgets/gauge"
 	"github.com/mum4k/termdash/widgets/linechart"
 	"github.com/mum4k/termdash/widgets/text"
-	"github.com/mum4k/termdash/widgets/textinput"
 
 	"github.com/nakabonne/ali/attacker"
 )
 
-// redrawInterval is how often termdash redraws the screen.
-const (
-	redrawInterval = 250 * time.Millisecond
-)
-
-type widgets struct {
-	urlInput       *textinput.TextInput
-	rateLimitInput *textinput.TextInput
-	durationInput  *textinput.TextInput
-	methodInput    *textinput.TextInput
-	bodyInput      *textinput.TextInput
-	headerInput    *textinput.TextInput
-	timeoutInput   *textinput.TextInput
-
-	latencyChart *linechart.LineChart
-
-	messageText   *text.Text
-	latenciesText *text.Text
-	bytesText     *text.Text
-	othersText    *text.Text
-
-	progressGauge *gauge.Gauge
-	navi          *text.Text
+type LineChart interface {
+	widgetapi.Widget
+	Series(label string, values []float64, opts ...linechart.SeriesOption) error
 }
 
-func newWidgets() (*widgets, error) {
+type Text interface {
+	widgetapi.Widget
+	Write(text string, wOpts ...text.WriteOption) error
+}
+
+type Gauge interface {
+	widgetapi.Widget
+	Percent(p int, opts ...gauge.Option) error
+}
+
+type chartLegend struct {
+	text     Text
+	cellOpts []cell.Option
+}
+
+type widgets struct {
+	latencyChart LineChart
+
+	paramsText      Text
+	latenciesText   Text
+	bytesText       Text
+	statusCodesText Text
+	errorsText      Text
+	othersText      Text
+
+	percentilesChart LineChart
+	p99Legend        chartLegend
+	p95Legend        chartLegend
+	p90Legend        chartLegend
+	p50Legend        chartLegend
+
+	progressGauge Gauge
+	navi          Text
+}
+
+func newWidgets(targetURL string, opts *attacker.Options) (*widgets, error) {
 	latencyChart, err := newLineChart()
 	if err != nil {
 		return nil, err
 	}
-	messageText, err := newText("Give the target URL and press Enter")
-	if err != nil {
-		return nil, err
-	}
+
 	latenciesText, err := newText("")
 	if err != nil {
 		return nil, err
@@ -56,39 +67,50 @@ func newWidgets() (*widgets, error) {
 	if err != nil {
 		return nil, err
 	}
+	statusCodesText, err := newText("")
+	if err != nil {
+		return nil, err
+	}
+	errorsText, err := newText("")
+	if err != nil {
+		return nil, err
+	}
 	othersText, err := newText("")
 	if err != nil {
 		return nil, err
 	}
-	navi, err := newText("Ctrl-C: quit, Enter: attack")
+
+	p99Color := cell.FgColor(cell.ColorNumber(87))
+	p99Text, err := newText("p99", text.WriteCellOpts(p99Color))
 	if err != nil {
 		return nil, err
 	}
-	urlInput, err := newTextInput("Target URL: ", "http://", 200)
+	p95Color := cell.FgColor(cell.ColorGreen)
+	p95Text, err := newText("p95", text.WriteCellOpts(p95Color))
 	if err != nil {
 		return nil, err
 	}
-	rateLimitInput, err := newTextInput("Rate limit: ", strconv.Itoa(attacker.DefaultRate), 50)
+	p90Color := cell.FgColor(cell.ColorYellow)
+	p90Text, err := newText("p90", text.WriteCellOpts(p90Color))
 	if err != nil {
 		return nil, err
 	}
-	durationInput, err := newTextInput("Duration: ", attacker.DefaultDuration.String(), 50)
+	p50Color := cell.FgColor(cell.ColorMagenta)
+	p50Text, err := newText("p50", text.WriteCellOpts(p50Color))
 	if err != nil {
 		return nil, err
 	}
-	methodInput, err := newTextInput("Method: ", attacker.DefaultMethod, 50)
+	percentilesChart, err := newLineChart()
 	if err != nil {
 		return nil, err
 	}
-	bodyInput, err := newTextInput("Body: ", "", 200)
+
+	paramsText, err := newText(makeParamsText(targetURL, opts))
 	if err != nil {
 		return nil, err
 	}
-	headerInput, err := newTextInput("Header: ", "", 50)
-	if err != nil {
-		return nil, err
-	}
-	timeoutInput, err := newTextInput("Timeout: ", attacker.DefaultTimeout.String(), 50)
+
+	navi, err := newText("q: quit, Enter: attack, l: next chart, h: prev chart")
 	if err != nil {
 		return nil, err
 	}
@@ -97,24 +119,24 @@ func newWidgets() (*widgets, error) {
 		return nil, err
 	}
 	return &widgets{
-		urlInput:       urlInput,
-		rateLimitInput: rateLimitInput,
-		durationInput:  durationInput,
-		methodInput:    methodInput,
-		bodyInput:      bodyInput,
-		headerInput:    headerInput,
-		timeoutInput:   timeoutInput,
-		latencyChart:   latencyChart,
-		messageText:    messageText,
-		latenciesText:  latenciesText,
-		bytesText:      bytesText,
-		othersText:     othersText,
-		progressGauge:  progressGauge,
-		navi:           navi,
+		latencyChart:     latencyChart,
+		paramsText:       paramsText,
+		latenciesText:    latenciesText,
+		bytesText:        bytesText,
+		statusCodesText:  statusCodesText,
+		errorsText:       errorsText,
+		othersText:       othersText,
+		progressGauge:    progressGauge,
+		percentilesChart: percentilesChart,
+		p99Legend:        chartLegend{p99Text, []cell.Option{p99Color}},
+		p95Legend:        chartLegend{p95Text, []cell.Option{p95Color}},
+		p90Legend:        chartLegend{p90Text, []cell.Option{p90Color}},
+		p50Legend:        chartLegend{p50Text, []cell.Option{p50Color}},
+		navi:             navi,
 	}, nil
 }
 
-func newLineChart() (*linechart.LineChart, error) {
+func newLineChart() (LineChart, error) {
 	return linechart.New(
 		linechart.AxesCellOpts(cell.FgColor(cell.ColorRed)),
 		linechart.YLabelCellOpts(cell.FgColor(cell.ColorGreen)),
@@ -122,35 +144,29 @@ func newLineChart() (*linechart.LineChart, error) {
 	)
 }
 
-func newText(s string) (*text.Text, error) {
+func newText(s string, opts ...text.WriteOption) (Text, error) {
 	t, err := text.New(text.RollContent(), text.WrapAtWords())
 	if err != nil {
 		return nil, err
 	}
 	if s != "" {
-		if err := t.Write(s); err != nil {
+		if err := t.Write(s, opts...); err != nil {
 			return nil, err
 		}
 	}
 	return t, nil
 }
 
-func newTextInput(label, placeHolder string, cells int) (*textinput.TextInput, error) {
-	return textinput.New(
-		//textinput.Label(label, cell.FgColor(cell.ColorWhite)),
-		//textinput.Border(linestyle.Double),
-		//textinput.BorderColor(cell.ColorGreen),
-		textinput.FillColor(cell.ColorBlue),
-		textinput.MaxWidthCells(cells),
-		textinput.PlaceHolder(placeHolder),
-		textinput.PlaceHolderColor(cell.ColorDefault),
+func newGauge() (Gauge, error) {
+	return gauge.New(
+		gauge.Border(linestyle.None),
 	)
 }
 
-func newGauge() (*gauge.Gauge, error) {
-	return gauge.New(
-		//gauge.Height(1),
-		gauge.Border(linestyle.None),
-		//gauge.BorderTitle("Progress"),
-	)
+func makeParamsText(targetURL string, opts *attacker.Options) string {
+	return fmt.Sprintf(`Target: %s
+Rate: %d
+Duration: %v
+Method: %s
+`, targetURL, opts.Rate, opts.Duration, opts.Method)
 }
