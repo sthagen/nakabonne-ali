@@ -22,14 +22,14 @@ brew install nakabonne/ali/ali
 **Via APT**
 
 ```bash
-wget https://github.com/nakabonne/ali/releases/download/v0.5.3/ali_0.5.3_linux_amd64.deb
-apt install ./ali_0.5.3_linux_amd64.deb
+wget https://github.com/nakabonne/ali/releases/download/v0.5.4/ali_0.5.4_linux_amd64.deb
+apt install ./ali_0.5.4_linux_amd64.deb
 ```
 
 **Via RPM**
 
 ```bash
-rpm -ivh https://github.com/nakabonne/ali/releases/download/v0.5.3/ali_0.5.3_linux_amd64.rpm
+rpm -ivh https://github.com/nakabonne/ali/releases/download/v0.5.4/ali_0.5.4_linux_amd64.rpm
 ```
 
 **Via AUR**
@@ -59,7 +59,7 @@ docker run --rm -it nakabonne/ali ali
 ali http://host.xz
 ```
 Replace `http://host.xz` with the target you want to issue the requests to.
-Press Enter when the UI appears, then the attack will be launched with default options.
+Press Enter when the UI appears, then the attack will be launched with default options (rate=50, duration=10s).
 
 ### Options
 
@@ -71,7 +71,6 @@ Usage:
 Flags:
   -b, --body string         A request body to be sent.
   -B, --body-file string    The path to file whose content will be set as the http request body.
-      --buckets             Histogram buckets in comma-separated value (example: "10ms, 100ms, 500ms".
   -c, --connections int     Amount of maximum open idle connections per target host (default 10000)
       --debug               Run in debug mode.
   -d, --duration duration   The amount of time to issue requests to the targets. Give 0s for an infinite attack. (default 10s)
@@ -83,12 +82,33 @@ Flags:
       --no-http2            Don't issue HTTP/2 requests to servers which support it.
   -K, --no-keepalive        Don't use HTTP persistent connection.
   -r, --rate int            The request rate per second to issue against the targets. Give 0 then it will send requests as fast as possible. (default 50)
+      --resolvers string    Custom DNS resolver addresses; comma-separated list.
   -t, --timeout duration    The timeout for each request. 0s means to disable timeouts. (default 30s)
   -v, --version             Print the current version.
   -w, --workers uint        Amount of initial workers to spawn. (default 10)
 ```
 
 Valid time units are "ns", "us" (or "µs"), "ms", "s", "m", "h".
+
+**Examples**
+
+For basic usage:
+
+```bash
+ali --rate=500 --duration=5m http://host.xz
+```
+
+For an infinite attack:
+
+```bash
+ali --duration=0 http://host.xz
+```
+
+For an attack with the POST method:
+
+```bash
+ali --body-file=/path/to/foo.json --method=POST http://host.xz
+```
 
 ### Charts
 Press `l` (or `h`) to switch the displayed chart. On all charts, you can click and drag to select a region to zoom into.
