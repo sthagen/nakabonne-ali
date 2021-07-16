@@ -16,18 +16,25 @@ import (
 	"go.uber.org/atomic"
 
 	"github.com/nakabonne/ali/attacker"
+	"github.com/nakabonne/ali/storage"
 )
 
 const (
-	// How often termdash redraws the screen.
-	redrawInterval = 250 * time.Millisecond
-	rootID         = "root"
-	chartID        = "chart"
+	DefaultQueryRange     = 30 * time.Second
+	DefaultRedrawInterval = 250 * time.Millisecond
+	minRedrawInterval     = 100 * time.Millisecond
+	rootID                = "root"
+	chartID               = "chart"
 )
+
+type Options struct {
+	RedrawInternal time.Duration
+	QueryRange     time.Duration
+}
 
 type runner func(ctx context.Context, t terminalapi.Terminal, c *container.Container, opts ...termdash.Option) error
 
-func Run(targetURL string, opts *attacker.Options) error {
+func Run(targetURL string, storage storage.Reader, attacker attacker.Attacker, opts Options) error {
 	var (
 		t   terminalapi.Terminal
 		err error
@@ -41,10 +48,10 @@ func Run(targetURL string, opts *attacker.Options) error {
 		return fmt.Errorf("failed to generate terminal interface: %w", err)
 	}
 	defer t.Close()
-	return run(t, termdash.Run, targetURL, opts)
+	return run(t, termdash.Run, targetURL, storage, attacker, opts)
 }
 
-func run(t terminalapi.Terminal, r runner, targetURL string, opts *attacker.Options) error {
+func run(t terminalapi.Terminal, r runner, targetURL string, storage storage.Reader, a attacker.Attacker, opts Options) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -53,7 +60,7 @@ func run(t terminalapi.Terminal, r runner, targetURL string, opts *attacker.Opti
 		return fmt.Errorf("failed to generate container: %w", err)
 	}
 
-	w, err := newWidgets(targetURL, opts)
+	w, err := newWidgets(targetURL, a.Rate(), a.Duration(), a.Method())
 	if err != nil {
 		return fmt.Errorf("failed to generate widgets: %w", err)
 	}
@@ -64,21 +71,32 @@ func run(t terminalapi.Terminal, r runner, targetURL string, opts *attacker.Opti
 	if err := c.Update(rootID, gridOpts.base...); err != nil {
 		return fmt.Errorf("failed to update container: %w", err)
 	}
+	if opts.QueryRange == 0 {
+		opts.QueryRange = DefaultQueryRange
+	}
+	if opts.RedrawInternal == 0 {
+		opts.RedrawInternal = DefaultRedrawInterval
+	}
+	if opts.RedrawInternal < minRedrawInterval {
+		return fmt.Errorf("redrawInterval must be greater than %s", minRedrawInterval)
+	}
 
 	d := &drawer{
-		widgets:      w,
-		gridOpts:     gridOpts,
-		chartCh:      make(chan *attacker.Result, 10000),
-		metricsCh:    make(chan *attacker.Metrics),
-		chartDrawing: atomic.NewBool(false),
-		metrics:      &attacker.Metrics{},
+		queryRange:     opts.QueryRange,
+		redrawInterval: opts.RedrawInternal,
+		widgets:        w,
+		gridOpts:       gridOpts,
+		metricsCh:      make(chan *attacker.Metrics),
+		chartDrawing:   atomic.NewBool(false),
+		metrics:        &attacker.Metrics{},
+		storage:        storage,
 	}
 	go d.updateMetrics(ctx)
 	go d.redrawMetrics(ctx)
 
-	k := keybinds(ctx, cancel, c, d, targetURL, *opts)
+	k := keybinds(ctx, cancel, c, d, a)
 
-	return r(ctx, t, c, termdash.KeyboardSubscriber(k), termdash.RedrawInterval(redrawInterval))
+	return r(ctx, t, c, termdash.KeyboardSubscriber(k), termdash.RedrawInterval(opts.RedrawInternal))
 }
 
 // newChartWithLegends creates a chart with legends at the bottom.

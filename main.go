@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nakabonne/ali/storage"
 
 	flag "github.com/spf13/pflag"
 
@@ -33,22 +37,31 @@ var (
 )
 
 type cli struct {
-	rate         int
-	duration     time.Duration
-	timeout      time.Duration
-	method       string
-	headers      []string
-	body         string
-	bodyFile     string
-	maxBody      int64
-	workers      uint64
-	maxWorkers   uint64
-	connections  int
-	noHTTP2      bool
-	localAddress string
-	noKeepAlive  bool
-	buckets      string
-	resolvers    string
+	// options for attacker
+	rate               int
+	duration           time.Duration
+	timeout            time.Duration
+	method             string
+	headers            []string
+	body               string
+	bodyFile           string
+	maxBody            int64
+	workers            uint64
+	maxWorkers         uint64
+	connections        int
+	noHTTP2            bool
+	localAddress       string
+	noKeepAlive        bool
+	buckets            string
+	resolvers          string
+	insecureSkipVerify bool
+	tlsCertFile        string
+	tlsKeyFile         string
+	caCert             string
+
+	//options for gui
+	queryRange     time.Duration
+	redrawInterval time.Duration
 
 	debug   bool
 	version bool
@@ -73,7 +86,7 @@ func parseFlags(stdout, stderr io.Writer) (*cli, error) {
 	flagSet.DurationVarP(&c.duration, "duration", "d", attacker.DefaultDuration, "The amount of time to issue requests to the targets. Give 0s for an infinite attack.")
 	flagSet.DurationVarP(&c.timeout, "timeout", "t", attacker.DefaultTimeout, "The timeout for each request. 0s means to disable timeouts.")
 	flagSet.StringVarP(&c.method, "method", "m", attacker.DefaultMethod, "An HTTP request method for each request.")
-	flagSet.StringSliceVarP(&c.headers, "header", "H", []string{}, "A request header to be sent. Can be used multiple times to send multiple headers.")
+	flagSet.StringArrayVarP(&c.headers, "header", "H", []string{}, "A request header to be sent. Can be used multiple times to send multiple headers.")
 	flagSet.StringVarP(&c.body, "body", "b", "", "A request body to be sent.")
 	flagSet.StringVarP(&c.bodyFile, "body-file", "B", "", "The path to file whose content will be set as the http request body.")
 	flagSet.Int64VarP(&c.maxBody, "max-body", "M", attacker.DefaultMaxBody, "Max bytes to capture from response bodies. Give -1 for no limit.")
@@ -85,9 +98,15 @@ func parseFlags(stdout, stderr io.Writer) (*cli, error) {
 	flagSet.IntVarP(&c.connections, "connections", "c", attacker.DefaultConnections, "Amount of maximum open idle connections per target host")
 	flagSet.BoolVar(&c.noHTTP2, "no-http2", false, "Don't issue HTTP/2 requests to servers which support it.")
 	flagSet.StringVar(&c.localAddress, "local-addr", "0.0.0.0", "Local IP address.")
+	flagSet.BoolVar(&c.insecureSkipVerify, "insecure", false, "Skip TLS verification")
+	flagSet.StringVar(&c.caCert, "cacert", "", "PEM ca certificate file")
+	flagSet.StringVar(&c.tlsCertFile, "cert", "", "PEM encoded tls certificate file to use")
+	flagSet.StringVar(&c.tlsKeyFile, "key", "", "PEM encoded tls private key file to use")
 	// TODO: Re-enable when making it capable of drawing histogram bar chart.
 	//flagSet.StringVar(&c.buckets, "buckets", "", "Histogram buckets; comma-separated list.")
 	flagSet.StringVar(&c.resolvers, "resolvers", "", "Custom DNS resolver addresses; comma-separated list.")
+	flagSet.DurationVar(&c.queryRange, "query-range", gui.DefaultQueryRange, "The results within the given time range will be drawn on the charts")
+	flagSet.DurationVar(&c.redrawInterval, "redraw-interval", gui.DefaultRedrawInterval, "Specify how often it redraws the screen")
 	flagSet.Usage = c.usage
 	if err := flagSet.Parse(os.Args[1:]); err != nil {
 		if !errors.Is(err, flag.ErrHelp) {
@@ -114,19 +133,38 @@ func (c *cli) run(args []string) int {
 		c.usage()
 		return 1
 	}
-	opts, err := c.makeOptions()
+	opts, err := c.makeAttackerOptions()
 	if err != nil {
 		fmt.Fprintln(c.stderr, err.Error())
 		c.usage()
 		return 1
 	}
+
+	// Data points out of query range get flushed to prevent using heap more than need.
+	s, err := storage.NewStorage(c.queryRange * 2)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "failed to initialize time-series storage: %v\n", err)
+		c.usage()
+		return 1
+	}
+	a, err := attacker.NewAttacker(s, target, opts)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "failed to initialize attacker: %v\n", err)
+		c.usage()
+		return 1
+	}
 	setDebug(nil, c.debug)
-	if err := gui.Run(target, opts); err != nil {
+
+	if err := gui.Run(target, s, a,
+		gui.Options{
+			QueryRange:     c.queryRange,
+			RedrawInternal: c.redrawInterval,
+		},
+	); err != nil {
 		fmt.Fprintf(c.stderr, "failed to start application: %s\n", err.Error())
 		c.usage()
 		return 1
 	}
-
 	return 0
 }
 
@@ -145,8 +183,8 @@ Author:
 	fmt.Fprintf(c.stderr, format, flagSet.FlagUsages())
 }
 
-// makeOptions gives back an options for attacker, with the CLI input.
-func (c *cli) makeOptions() (*attacker.Options, error) {
+// makeAttackerOptions gives back an options for attacker, with the CLI input.
+func (c *cli) makeAttackerOptions() (*attacker.Options, error) {
 	if !validateMethod(c.method) {
 		return nil, fmt.Errorf("given method %q isn't an HTTP request method", c.method)
 	}
@@ -195,22 +233,45 @@ func (c *cli) makeOptions() (*attacker.Options, error) {
 		return nil, err
 	}
 
+	var certs []tls.Certificate
+	if c.tlsCertFile != "" && c.tlsKeyFile != "" {
+		cert, err := tls.LoadX509KeyPair(c.tlsCertFile, c.tlsKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("error loading PEM key pair %w", err)
+		}
+
+		certs = append(certs, cert)
+	}
+
+	var caCertPool *x509.CertPool
+	if c.caCert != "" {
+		caCertPool = x509.NewCertPool()
+		caCert, err := ioutil.ReadFile(c.caCert)
+		if err != nil {
+			log.Fatal(err)
+		}
+		caCertPool.AppendCertsFromPEM(caCert)
+	}
+
 	return &attacker.Options{
-		Rate:        c.rate,
-		Duration:    c.duration,
-		Timeout:     c.timeout,
-		Method:      c.method,
-		Body:        body,
-		MaxBody:     c.maxBody,
-		Header:      header,
-		KeepAlive:   !c.noKeepAlive,
-		Workers:     c.workers,
-		MaxWorkers:  c.maxWorkers,
-		Connections: c.connections,
-		HTTP2:       !c.noHTTP2,
-		LocalAddr:   localAddr,
-		Buckets:     parsedBuckets,
-		Resolvers:   parsedResolvers,
+		Rate:               c.rate,
+		Duration:           c.duration,
+		Timeout:            c.timeout,
+		Method:             c.method,
+		Body:               body,
+		MaxBody:            c.maxBody,
+		Header:             header,
+		KeepAlive:          !c.noKeepAlive,
+		Workers:            c.workers,
+		MaxWorkers:         c.maxWorkers,
+		Connections:        c.connections,
+		HTTP2:              !c.noHTTP2,
+		LocalAddr:          localAddr,
+		Buckets:            parsedBuckets,
+		Resolvers:          parsedResolvers,
+		InsecureSkipVerify: c.insecureSkipVerify,
+		TLSCertificates:    certs,
+		CACertificatePool:  caCertPool,
 	}, nil
 }
 
@@ -283,6 +344,7 @@ func parseResolvers(addrs string) ([]string, error) {
 // Makes a new file under the ~/.config/ali only when debug use.
 func setDebug(w io.Writer, debug bool) {
 	if !debug {
+		log.SetOutput(io.Discard)
 		return
 	}
 	if w == nil {
