@@ -18,6 +18,13 @@ Binary releases are available through [here](https://github.com/nakabonne/ali/re
 brew install nakabonne/ali/ali
 ```
 
+**Via MacPorts**
+
+```bash
+sudo port selfupdate
+sudo port install ali
+```
+
 **Via APT**
 
 ```bash
@@ -39,7 +46,7 @@ pacman -S ali
 
 **Via APK**
 
-After [enabling the testing repo](https://wiki.alpinelinux.org/wiki/Enable_Community_Repository):
+After [enabling the community repo](https://wiki.alpinelinux.org/wiki/Enable_Community_Repository):
 
 ```bash
 apk add ali

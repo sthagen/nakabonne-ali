@@ -24,7 +24,7 @@ jobs:
     - name: Install Go
       uses: actions/setup-go@v2
       with:
-        go-version: 1.16
+        go-version: 1.17
     - name: Checkout code
       uses: actions/checkout@v2
     - name: Build
@@ -32,7 +32,7 @@ jobs:
     - name: Test
       run: make test
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v1
+      uses: codecov/codecov-action@v2
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         file: ./coverage.txt
